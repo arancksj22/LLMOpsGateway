@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Gateway — Demo</title>
+<style>
+  :root { --bg:#0f1117; --panel:#171a23; --border:#2a2f3d; --text:#e6e8ee; --muted:#8b93a7; --accent:#4f8cff; --green:#3ecf8e; --amber:#ffb454; --red:#ff6b6b; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:18px 24px; border-bottom:1px solid var(--border); display:flex; align-items:baseline; gap:12px; }
+  header h1 { font-size:18px; margin:0; }
+  header span { color:var(--muted); font-size:13px; }
+  main { display:grid; grid-template-columns: 1.2fr .8fr; gap:16px; padding:16px 24px; max-width:1200px; margin:0 auto; }
+  @media (max-width: 900px){ main { grid-template-columns:1fr; } }
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:16px; }
+  .panel h2 { margin:0 0 12px; font-size:14px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
+  label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+  textarea, input[type=text] { width:100%; background:#0c0e13; color:var(--text); border:1px solid var(--border); border-radius:8px; padding:10px; font-size:14px; font-family:inherit; }
+  textarea { min-height:110px; resize:vertical; }
+  .row { display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-top:10px; }
+  .row label { margin:0; display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text); }
+  button { background:var(--accent); border:none; color:#fff; border-radius:8px; padding:10px 22px; font-size:14px; cursor:pointer; margin-top:12px; }
+  button:disabled { opacity:.5; cursor:wait; }
+  .badges { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0; }
+  .badge { font-size:12px; padding:4px 10px; border-radius:999px; border:1px solid var(--border); color:var(--muted); }
+  .badge.hit { border-color:var(--green); color:var(--green); }
+  .badge.semantic { border-color:var(--amber); color:var(--amber); }
+  .badge.miss { border-color:var(--muted); }
+  .badge.err { border-color:var(--red); color:var(--red); }
+  #answer { white-space:pre-wrap; font-size:14px; line-height:1.55; min-height:60px; color:var(--text); }
+  .stats { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .stat { background:#0c0e13; border:1px solid var(--border); border-radius:8px; padding:10px 12px; }
+  .stat .v { font-size:20px; font-weight:600; }
+  .stat .k { font-size:11px; color:var(--muted); margin-top:2px; }
+  footer { color:var(--muted); font-size:12px; padding:10px 24px 24px; max-width:1200px; margin:0 auto; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Distributed LLM Gateway</h1>
+  <span>exact + semantic caching &middot; coalescing &middot; rate limits &middot; budgets &middot; failover</span>
+</header>
+<main>
+  <section class="panel">
+    <h2>Send a prompt through the gateway</h2>
+    <label for="apikey">Gateway API key</label>
+    <input type="text" id="apikey" value="gw_demo">
+    <label for="prompt">Prompt</label>
+    <textarea id="prompt">Explain what a distributed cache is in two sentences.</textarea>
+    <div class="row">
+      <label><input type="checkbox" id="cache" checked> cache</label>
+      <label><input type="checkbox" id="compress" checked> compress</label>
+      <label>temperature <input type="text" id="temp" value="0" style="width:56px"></label>
+    </div>
+    <button id="send">Send</button>
+    <div class="badges" id="badges"></div>
+    <div id="answer"></div>
+  </section>
+  <section class="panel">
+    <h2>Live cluster stats <span style="text-transform:none;font-weight:400">(shared via Redis)</span></h2>
+    <div class="stats" id="stats"></div>
+  </section>
+</main>
+<footer>
+  Try sending the same prompt twice (exact hit), then a reworded version (semantic hit).
+  Metrics: <a href="/actuator/prometheus">/actuator/prometheus</a> &middot; Stats API: <a href="/admin/stats">/admin/stats</a>
+</footer>
+<script>
+const $ = id => document.getElementById(id);
+
+function badge(text, cls) {
+  return `<span class="badge ${cls||''}">${text}</span>`;
+}
+
+$('send').onclick = async () => {
+  const btn = $('send');
+  btn.disabled = true;
+  $('badges').innerHTML = '';
+  $('answer').textContent = '…';
+  try {
+    const res = await fetch('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': $('apikey').value.trim() },
+      body: JSON.stringify({
+        model: 'gateway-default',
+        messages: [{ role: 'user', content: $('prompt').value }],
+        temperature: parseFloat($('temp').value) || 0,
+        cache: $('cache').checked,
+        compress: $('compress').checked
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      $('badges').innerHTML = badge(data.error?.type || 'error', 'err');
+      $('answer').textContent = data.error?.message || JSON.stringify(data);
+      return;
+    }
+    const g = data.gateway || {};
+    const cacheCls = g.cache === 'exact' ? 'hit' : (g.cache === 'semantic' ? 'semantic' : 'miss');
+    $('badges').innerHTML =
+      badge('cache: ' + g.cache, cacheCls) +
+      badge(g.latency_ms + ' ms') +
+      badge((data.usage?.total_tokens ?? 0) + ' tokens') +
+      badge('$' + (g.cost_usd ?? 0).toFixed(6)) +
+      (g.saved_usd ? badge('saved $' + g.saved_usd.toFixed(6), 'hit') : '') +
+      badge('provider: ' + g.provider) +
+      badge('instance: ' + g.instance) +
+      (g.compressed ? badge('compressed −' + g.tokens_saved_by_compression + ' tok', 'semantic') : '') +
+      (g.coalesced ? badge('coalesced', 'hit') : '');
+    $('answer').textContent = data.choices?.[0]?.message?.content || '';
+  } catch (e) {
+    $('badges').innerHTML = badge('network error', 'err');
+    $('answer').textContent = String(e);
+  } finally {
+    btn.disabled = false;
+    refreshStats();
+  }
+};
+
+function stat(v, k) {
+  return `<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`;
+}
+
+async function refreshStats() {
+  try {
+    const s = await (await fetch('/admin/stats')).json();
+    const fmt = n => (n ?? 0).toLocaleString();
+    $('stats').innerHTML =
+      stat(fmt(s.requests), 'total requests') +
+      stat(((s.hit_rate ?? 0) * 100).toFixed(1) + '%', 'cache hit rate') +
+      stat(fmt(s.exact_hits), 'exact hits') +
+      stat(fmt(s.semantic_hits), 'semantic hits') +
+      stat('$' + (s.cost_usd ?? 0).toFixed(4), 'provider spend') +
+      stat('$' + (s.saved_usd ?? 0).toFixed(4), 'cost saved by cache') +
+      stat(fmt((s.tokens_prompt ?? 0) + (s.tokens_completion ?? 0)), 'tokens used') +
+      stat(fmt(s.tokens_saved_compression), 'tokens saved (compression)') +
+      stat(fmt(s.coalesced), 'coalesced calls') +
+      stat(fmt((s.rejected_rate_limit ?? 0) + (s.rejected_backpressure ?? 0) + (s.rejected_budget ?? 0)), 'rejections');
+  } catch (e) { /* gateway starting up */ }
+}
+refreshStats();
+setInterval(refreshStats, 3000);
+</script>
+</body>
+</html>

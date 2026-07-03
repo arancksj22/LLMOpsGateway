@@ -1,0 +1,89 @@
+# Local multi-instance cluster: Nginx LB -> 3 stateless gateway replicas
+# -> shared Redis + Qdrant, observed by Prometheus + Grafana.
+#
+#   cp .env.example .env   (add GROQ/GEMINI keys, or leave empty for mock mode)
+#   docker compose up --build
+#
+#   UI:         http://localhost:8080
+#   Grafana:    http://localhost:3000  (admin / admin)
+#   Prometheus: http://localhost:9090
+
+x-gateway: &gateway
+  build: ./backend
+  environment: &gateway-env
+    REDIS_HOST: redis
+    QDRANT_URL: http://qdrant:6333
+    GROQ_API_KEY: ${GROQ_API_KEY:-}
+    GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    PROVIDERS_ORDER: ${PROVIDERS_ORDER:-groq,gemini,mock}
+    EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-hash}
+    EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-384}
+    SEMANTIC_THRESHOLD: ${SEMANTIC_THRESHOLD:-0.66}
+    ORG_BUDGET_USD: ${ORG_BUDGET_USD:-25}
+    ADMIN_KEY: ${ADMIN_KEY:-admin-secret}
+    MOCK_LATENCY_MS: ${MOCK_LATENCY_MS:-200}
+    MAX_CONCURRENT: ${MAX_CONCURRENT:-64}
+  depends_on:
+    - redis
+    - qdrant
+  restart: unless-stopped
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+
+  gateway1:
+    <<: *gateway
+    environment:
+      <<: *gateway-env
+      INSTANCE_ID: gw1
+
+  gateway2:
+    <<: *gateway
+    environment:
+      <<: *gateway-env
+      INSTANCE_ID: gw2
+
+  gateway3:
+    <<: *gateway
+    environment:
+      <<: *gateway-env
+      INSTANCE_ID: gw3
+
+  nginx:
+    image: nginx:alpine
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8080:80"
+    depends_on:
+      - gateway1
+      - gateway2
+      - gateway3
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus

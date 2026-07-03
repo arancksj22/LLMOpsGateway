@@ -1,0 +1,90 @@
+{
+  "title": "LLM Gateway",
+  "uid": "llm-gateway",
+  "timezone": "browser",
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1, "type": "timeseries", "title": "Request rate (req/s) by cache outcome",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "sum by (cache) (rate(gateway_requests_total[1m]))", "legendFormat": "{{cache}}" }
+      ]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "Latency p50 / p95 / p99 (s)",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(gateway_request_latency_seconds_bucket[2m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(gateway_request_latency_seconds_bucket[2m])) by (le))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum(rate(gateway_request_latency_seconds_bucket[2m])) by (le))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Cache hit rate",
+      "gridPos": { "x": 0, "y": 8, "w": 4, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "percentunit" } },
+      "targets": [
+        { "expr": "sum(gateway_requests_total{cache!=\"miss\"}) / sum(gateway_requests_total)" }
+      ]
+    },
+    {
+      "id": 4, "type": "stat", "title": "Total provider cost (USD)",
+      "gridPos": { "x": 4, "y": 8, "w": 4, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 4 } },
+      "targets": [ { "expr": "sum(gateway_cost_usd_total)" } ]
+    },
+    {
+      "id": 5, "type": "stat", "title": "Cost saved by caching (USD)",
+      "gridPos": { "x": 8, "y": 8, "w": 4, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 4 } },
+      "targets": [ { "expr": "sum(gateway_saved_usd_total)" } ]
+    },
+    {
+      "id": 6, "type": "stat", "title": "Provider calls coalesced",
+      "gridPos": { "x": 12, "y": 8, "w": 4, "h": 6 },
+      "targets": [ { "expr": "sum(gateway_coalesced_total)" } ]
+    },
+    {
+      "id": 7, "type": "stat", "title": "Tokens saved by compression",
+      "gridPos": { "x": 16, "y": 8, "w": 4, "h": 6 },
+      "targets": [ { "expr": "sum(gateway_compression_tokens_saved_total)" } ]
+    },
+    {
+      "id": 8, "type": "stat", "title": "Tokens used",
+      "gridPos": { "x": 20, "y": 8, "w": 4, "h": 6 },
+      "targets": [ { "expr": "sum(gateway_tokens_total)" } ]
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "Rejections/s (rate limit / budget / backpressure)",
+      "gridPos": { "x": 0, "y": 14, "w": 8, "h": 8 },
+      "targets": [
+        { "expr": "sum by (reason) (rate(gateway_rejections_total[1m]))", "legendFormat": "{{reason}}" }
+      ]
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "Provider calls/s by provider & outcome",
+      "gridPos": { "x": 8, "y": 14, "w": 8, "h": 8 },
+      "targets": [
+        { "expr": "sum by (provider, outcome) (rate(gateway_provider_calls_total[1m]))", "legendFormat": "{{provider}}/{{outcome}}" }
+      ]
+    },
+    {
+      "id": 11, "type": "timeseries", "title": "Cost by team (USD, cumulative)",
+      "gridPos": { "x": 16, "y": 14, "w": 8, "h": 8 },
+      "targets": [
+        { "expr": "sum by (team) (gateway_cost_usd_total)", "legendFormat": "{{team}}" }
+      ]
+    },
+    {
+      "id": 12, "type": "timeseries", "title": "Requests/s per instance",
+      "gridPos": { "x": 0, "y": 22, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "sum by (instance) (rate(gateway_requests_total[1m]))", "legendFormat": "{{instance}}" }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "version": 1
+}

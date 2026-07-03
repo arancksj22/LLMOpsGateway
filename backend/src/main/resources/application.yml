@@ -1,0 +1,80 @@
+spring:
+  application:
+    name: llmgateway
+  threads:
+    virtual:
+      enabled: true
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    default-property-inclusion: non_null
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+
+server:
+  port: ${PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+
+gateway:
+  admin-key: ${ADMIN_KEY:admin-secret}
+  demo-key: ${DEMO_KEY:gw_demo}
+  instance-id: ${INSTANCE_ID:local}
+  exact-cache:
+    enabled: ${EXACT_CACHE_ENABLED:true}
+    ttl-seconds: ${EXACT_CACHE_TTL:3600}
+  semantic-cache:
+    enabled: ${SEMANTIC_CACHE_ENABLED:true}
+    # 0.66 is data-justified for the hash embedder via scripts/threshold_eval.py
+    # (62% hit rate, 0% false hits). Use ~0.85+ with EMBEDDING_PROVIDER=gemini.
+    threshold: ${SEMANTIC_THRESHOLD:0.66}
+    ttl-seconds: ${SEMANTIC_CACHE_TTL:3600}
+    max-temperature: ${SEMANTIC_MAX_TEMPERATURE:0.7}
+  compression:
+    enabled: ${COMPRESSION_ENABLED:true}
+    min-words: ${COMPRESSION_MIN_WORDS:40}
+  rate-limit:
+    default-rpm: ${DEFAULT_RPM:120}
+  budget:
+    org-monthly-usd: ${ORG_BUDGET_USD:25}
+    default-key-monthly-usd: ${KEY_BUDGET_USD:10}
+    enforce: ${BUDGET_ENFORCE:true}
+  backpressure:
+    max-concurrent: ${MAX_CONCURRENT:64}
+  circuit-breaker:
+    failure-threshold: ${CB_FAILURE_THRESHOLD:3}
+    cooldown-seconds: ${CB_COOLDOWN_SECONDS:30}
+  embedding:
+    provider: ${EMBEDDING_PROVIDER:hash}
+    dimension: ${EMBEDDING_DIMENSION:384}
+  qdrant:
+    url: ${QDRANT_URL:http://localhost:6333}
+    collection: ${QDRANT_COLLECTION:semantic_cache}
+  providers:
+    order: ${PROVIDERS_ORDER:groq,gemini,mock}
+    groq:
+      api-key: ${GROQ_API_KEY:}
+      base-url: ${GROQ_BASE_URL:https://api.groq.com/openai/v1}
+      model: ${GROQ_MODEL:llama-3.1-8b-instant}
+    gemini:
+      api-key: ${GEMINI_API_KEY:}
+      model: ${GEMINI_MODEL:gemini-2.0-flash}
+      embedding-model: ${GEMINI_EMBEDDING_MODEL:text-embedding-004}
+    mock:
+      latency-ms: ${MOCK_LATENCY_MS:200}
+  pricing:
+    "[llama-3.1-8b-instant]":
+      input: 0.05
+      output: 0.08
+    "[gemini-2.0-flash]":
+      input: 0.10
+      output: 0.40
+    "[mock-model]":
+      input: 0.05
+      output: 0.08

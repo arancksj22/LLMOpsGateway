@@ -1,0 +1,38 @@
+{
+  "equivalent": [
+    ["What is the capital of France?", "Tell me the capital city of France"],
+    ["What is the capital of France?", "Which city is France's capital?"],
+    ["How do I reverse a string in Python?", "Reverse a string using Python - how?"],
+    ["How do I reverse a string in Python?", "What's the way to reverse a Python string?"],
+    ["Explain the CAP theorem briefly.", "Give me a brief explanation of the CAP theorem"],
+    ["What does a load balancer do?", "Describe what a load balancer does"],
+    ["What is a distributed cache?", "Can you describe a distributed cache?"],
+    ["What is a vector database?", "Tell me about vector databases"],
+    ["How does garbage collection work in Java?", "Explain Java garbage collection"],
+    ["What is an API rate limit?", "Explain API rate limits"],
+    ["Summarize the plot of Hamlet.", "Give me a summary of Hamlet's plot"],
+    ["Convert 100 fahrenheit to celsius", "What is 100 degrees fahrenheit in celsius?"],
+    ["What is eventual consistency?", "Define eventual consistency"],
+    ["Why is the sky blue?", "Explain why the sky appears blue"],
+    ["What is Docker used for?", "What do people use Docker for?"],
+    ["How do circuit breakers work in microservices?", "Explain circuit breakers in microservices"]
+  ],
+  "non_equivalent": [
+    ["What is the capital of France?", "What is the capital of Germany?"],
+    ["What is the capital of France?", "How do I bake sourdough bread?"],
+    ["How do I reverse a string in Python?", "How do I sort a list in Python?"],
+    ["Explain the CAP theorem briefly.", "Explain the halting problem briefly."],
+    ["What does a load balancer do?", "What does a compiler do?"],
+    ["What is a distributed cache?", "What is a distributed ledger?"],
+    ["What is a vector database?", "What is a relational database?"],
+    ["How does garbage collection work in Java?", "How does inheritance work in Java?"],
+    ["What is an API rate limit?", "What is an API gateway?"],
+    ["Summarize the plot of Hamlet.", "Summarize the plot of Macbeth."],
+    ["Convert 100 fahrenheit to celsius", "Convert 100 dollars to euros"],
+    ["What is eventual consistency?", "What is strong typing?"],
+    ["Why is the sky blue?", "Why is the ocean salty?"],
+    ["What is Docker used for?", "What is Kubernetes used for?"],
+    ["How do circuit breakers work in microservices?", "How do message queues work in microservices?"],
+    ["What is the tallest mountain?", "What is the deepest ocean trench?"]
+  ]
+}
