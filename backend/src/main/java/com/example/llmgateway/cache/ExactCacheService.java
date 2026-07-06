@@ -8,7 +8,12 @@ import org.springframework.stereotype.Service;
 import java.time.Duration;
 import java.util.Optional;
 
-/** Byte-identical request deduplication, shared across all instances via Redis. */
+/**
+ * Exact-match cache — byte-identical request deduplication. The whole
+ * canonical request (messages + temperature) is SHA-256 hashed and the stored
+ * response lives in Redis, so a response cached by one gateway instance is
+ * served by any other. Checked before the (more expensive) semantic cache.
+ */
 @Service
 public class ExactCacheService {
 
@@ -23,28 +28,17 @@ public class ExactCacheService {
     }
 
     public Optional<CachedResponse> get(String hash) {
-        if (!props.getExactCache().isEnabled()) {
+        if (!props.exactCache().enabled()) {
             return Optional.empty();
         }
         String json = redis.opsForValue().get("cache:exact:" + hash);
-        if (json == null) {
-            return Optional.empty();
-        }
-        try {
-            return Optional.of(mapper.readValue(json, CachedResponse.class));
-        } catch (Exception e) {
-            return Optional.empty();
-        }
+        return json == null ? Optional.empty() : Optional.of(mapper.readValue(json, CachedResponse.class));
     }
 
     public void put(String hash, CachedResponse response) {
-        if (!props.getExactCache().isEnabled()) {
-            return;
-        }
-        try {
+        if (props.exactCache().enabled()) {
             redis.opsForValue().set("cache:exact:" + hash, mapper.writeValueAsString(response),
-                    Duration.ofSeconds(props.getExactCache().getTtlSeconds()));
-        } catch (Exception ignored) {
+                    Duration.ofSeconds(props.exactCache().ttlSeconds()));
         }
     }
 }

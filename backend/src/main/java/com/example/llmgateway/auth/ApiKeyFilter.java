@@ -35,7 +35,7 @@ public class ApiKeyFilter extends OncePerRequestFilter {
                 key = auth.substring(7).trim();
             }
         }
-        ApiKeyInfo info = key == null ? null : safeGet(key);
+        ApiKeyInfo info = key == null ? null : apiKeyService.get(key);
         if (info == null || info.revoked()) {
             response.setStatus(401);
             response.setContentType("application/json");
@@ -44,13 +44,5 @@ public class ApiKeyFilter extends OncePerRequestFilter {
         }
         request.setAttribute(ATTR, info);
         chain.doFilter(request, response);
-    }
-
-    private ApiKeyInfo safeGet(String key) {
-        try {
-            return apiKeyService.get(key);
-        } catch (Exception e) {
-            return null;
-        }
     }
 }

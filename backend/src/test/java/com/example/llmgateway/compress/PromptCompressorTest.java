@@ -11,7 +11,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PromptCompressorTest {
 
-	private final PromptCompressor compressor = new PromptCompressor(new GatewayProperties());
+	private final PromptCompressor compressor =
+			new PromptCompressor(new GatewayProperties.Compression(true, 40));
 
 	@Test
 	void longPromptsGetMeasurablySmaller() {

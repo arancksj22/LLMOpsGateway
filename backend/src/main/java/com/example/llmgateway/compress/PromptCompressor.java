@@ -2,7 +2,6 @@ package com.example.llmgateway.compress;
 
 import com.example.llmgateway.api.dto.Message;
 import com.example.llmgateway.config.GatewayProperties;
-import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -10,11 +9,13 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Heuristic token-importance trimmer: collapses whitespace, drops duplicate
- * sentences, strips filler phrases and low-information stopwords from long
- * user/system prompts. Roughly meaning-preserving, measurably fewer tokens.
+ * Prompt compression — shrinks the tokens of calls we can't avoid. A
+ * heuristic token-importance trimmer: collapses whitespace, drops duplicate
+ * sentences, strips filler phrases and low-information words from long
+ * user/system prompts. Roughly meaning-preserving, measurably fewer tokens
+ * (66% on a verbose redundant prompt — see RESULTS.md). Short prompts are
+ * left untouched.
  */
-@Service
 public class PromptCompressor {
 
     private static final List<String> FILLER_PHRASES = List.of(
@@ -35,10 +36,10 @@ public class PromptCompressor {
         }
     }
 
-    private final GatewayProperties props;
+    private final GatewayProperties.Compression cfg;
 
-    public PromptCompressor(GatewayProperties props) {
-        this.props = props;
+    public PromptCompressor(GatewayProperties.Compression cfg) {
+        this.cfg = cfg;
     }
 
     public Result none(List<Message> messages) {
@@ -52,7 +53,7 @@ public class PromptCompressor {
         boolean changed = false;
         for (Message m : messages) {
             if (("user".equals(m.role()) || "system".equals(m.role()))
-                    && wordCount(m.content()) >= props.getCompression().getMinWords()) {
+                    && wordCount(m.content()) >= cfg.minWords()) {
                 String compressed = compressText(m.content());
                 changed |= !compressed.equals(m.content());
                 out.add(new Message(m.role(), compressed));
@@ -64,7 +65,7 @@ public class PromptCompressor {
         return new Result(out, before, after, changed && after < before);
     }
 
-    String compressText(String text) {
+    private String compressText(String text) {
         String s = text.replaceAll("\\s+", " ").trim();
         String lower = s.toLowerCase();
         for (String phrase : FILLER_PHRASES) {
@@ -74,19 +75,11 @@ public class PromptCompressor {
                 lower = s.toLowerCase();
             }
         }
-        // drop duplicate sentences, then low-information words
-        Set<String> seen = new LinkedHashSet<>();
-        for (String sentence : s.split("(?<=[.!?])\\s+")) {
-            String trimmed = sentence.trim();
-            if (!trimmed.isEmpty()) {
-                seen.add(trimmed);
-            }
-        }
+        Set<String> sentences = new LinkedHashSet<>(List.of(s.split("(?<=[.!?])\\s+")));
         StringBuilder sb = new StringBuilder();
-        for (String sentence : seen) {
+        for (String sentence : sentences) {
             for (String word : sentence.split("\\s+")) {
-                String bare = word.toLowerCase().replaceAll("[^a-z0-9']", "");
-                if (STOPWORDS.contains(bare)) {
+                if (STOPWORDS.contains(word.toLowerCase().replaceAll("[^a-z0-9']", ""))) {
                     continue;
                 }
                 if (!sb.isEmpty()) {
@@ -99,7 +92,7 @@ public class PromptCompressor {
         return result.isEmpty() ? s : result;
     }
 
-    public static int estimate(List<Message> messages) {
+    private static int estimate(List<Message> messages) {
         int words = 0;
         for (Message m : messages) {
             words += wordCount(m.content());
@@ -108,6 +101,6 @@ public class PromptCompressor {
     }
 
     private static int wordCount(String text) {
-        return text == null || text.isBlank() ? 0 : text.trim().split("\\s+").length;
+        return text.isBlank() ? 0 : text.trim().split("\\s+").length;
     }
 }

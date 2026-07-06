@@ -2,97 +2,128 @@ package com.example.llmgateway.cache;
 
 import com.example.llmgateway.config.GatewayProperties;
 import com.example.llmgateway.embedding.EmbeddingService;
-import com.example.llmgateway.vector.VectorStore;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import tools.jackson.databind.JsonNode;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClient;
 
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Meaning-equivalent request caching: embed the prompt, search the shared
- * vector DB, and serve the stored answer when similarity clears the
- * configured threshold. Best-effort: any embedding/vector failure just
- * degrades to a cache miss.
+ * Semantic cache — the reason "Explain what X is" can be answered from a
+ * response cached for "What is X?". Each fresh answer is stored in Qdrant
+ * (shared by every gateway instance) under an embedding of its prompt; on
+ * lookup we nearest-neighbour search and serve the stored answer when cosine
+ * similarity clears the configured threshold and the entry isn't expired.
+ * Talks to Qdrant's REST API directly — no client library.
  */
 @Service
 public class SemanticCacheService {
 
-    private static final Logger log = LoggerFactory.getLogger(SemanticCacheService.class);
-
     private final EmbeddingService embedding;
-    private final VectorStore vectorStore;
+    private final RestClient rest;
     private final GatewayProperties props;
+    private volatile boolean collectionReady;
 
-    public SemanticCacheService(EmbeddingService embedding, VectorStore vectorStore, GatewayProperties props) {
+    public SemanticCacheService(EmbeddingService embedding, RestClient rest, GatewayProperties props) {
         this.embedding = embedding;
-        this.vectorStore = vectorStore;
+        this.rest = rest;
         this.props = props;
     }
 
     public boolean enabled() {
-        return props.getSemanticCache().isEnabled();
+        return props.semanticCache().enabled();
     }
 
-    /** Embeds once so lookup + store don't compute the vector twice. */
+    /** Embed once per request so lookup + store don't compute the vector twice. */
     public float[] embed(String text) {
-        try {
-            return embedding.embed(text);
-        } catch (Exception e) {
-            log.warn("Embedding failed: {}", e.getMessage());
-            return null;
-        }
+        return embedding.embed(text);
     }
 
+    /** Used by /admin/similarity and the threshold-eval script. */
     public double similarity(String a, String b) {
-        return EmbeddingService.cosine(embedding.embed(a), embedding.embed(b));
+        return embedding.similarity(a, b);
     }
 
     public Optional<CachedResponse> lookup(float[] vector) {
-        if (!enabled() || vector == null) {
+        if (!enabled()) {
             return Optional.empty();
         }
-        try {
-            Optional<VectorStore.Hit> hit = vectorStore.searchTop1(vector);
-            if (hit.isEmpty() || hit.get().score() < props.getSemanticCache().getThreshold()) {
-                return Optional.empty();
-            }
-            Map<String, Object> p = hit.get().payload();
-            long ts = ((Number) p.getOrDefault("ts", 0L)).longValue();
-            if (System.currentTimeMillis() - ts > props.getSemanticCache().getTtlSeconds() * 1000L) {
-                return Optional.empty();
-            }
-            return Optional.of(new CachedResponse(
-                    (String) p.getOrDefault("content", ""),
-                    (String) p.getOrDefault("model", "unknown"),
-                    (String) p.getOrDefault("provider", "unknown"),
-                    ((Number) p.getOrDefault("prompt_tokens", 0)).intValue(),
-                    ((Number) p.getOrDefault("completion_tokens", 0)).intValue(),
-                    ts));
-        } catch (Exception e) {
-            log.warn("Semantic lookup failed: {}", e.getMessage());
+        ensureCollection();
+        JsonNode result = rest.post()
+                .uri(base() + "/points/search")
+                .body(Map.of("vector", toList(vector), "limit", 1, "with_payload", true))
+                .retrieve()
+                .body(JsonNode.class)
+                .path("result");
+        if (result.isEmpty() || result.get(0).path("score").asDouble() < props.semanticCache().threshold()) {
             return Optional.empty();
         }
+        JsonNode p = result.get(0).path("payload");
+        long ts = p.path("ts").asLong();
+        if (System.currentTimeMillis() - ts > props.semanticCache().ttlSeconds() * 1000L) {
+            return Optional.empty();
+        }
+        return Optional.of(new CachedResponse(
+                p.path("content").asText(),
+                p.path("model").asText(),
+                p.path("provider").asText(),
+                p.path("prompt_tokens").asInt(),
+                p.path("completion_tokens").asInt(),
+                ts));
     }
 
     public void store(String hash, float[] vector, CachedResponse r) {
-        if (!enabled() || vector == null) {
+        if (!enabled()) {
             return;
         }
-        try {
-            String id = UUID.nameUUIDFromBytes(hash.getBytes(StandardCharsets.UTF_8)).toString();
-            vectorStore.upsert(id, vector, Map.of(
-                    "content", r.content(),
-                    "model", r.model(),
-                    "provider", r.provider(),
-                    "prompt_tokens", r.promptTokens(),
-                    "completion_tokens", r.completionTokens(),
-                    "ts", r.ts()));
-        } catch (Exception e) {
-            log.warn("Semantic store failed: {}", e.getMessage());
+        ensureCollection();
+        Map<String, Object> point = new HashMap<>();
+        point.put("id", UUID.nameUUIDFromBytes(hash.getBytes(StandardCharsets.UTF_8)).toString());
+        point.put("vector", toList(vector));
+        point.put("payload", Map.of(
+                "content", r.content(),
+                "model", r.model(),
+                "provider", r.provider(),
+                "prompt_tokens", r.promptTokens(),
+                "completion_tokens", r.completionTokens(),
+                "ts", r.ts()));
+        rest.put().uri(base() + "/points?wait=true").body(Map.of("points", List.of(point)))
+                .retrieve().body(JsonNode.class);
+    }
+
+    private String base() {
+        return props.qdrant().url() + "/collections/" + props.qdrant().collection();
+    }
+
+    private void ensureCollection() {
+        if (collectionReady) {
+            return;
         }
+        synchronized (this) {
+            if (collectionReady) {
+                return;
+            }
+            try {
+                rest.get().uri(base()).retrieve().body(JsonNode.class);
+            } catch (Exception notFound) {
+                rest.put().uri(base())
+                        .body(Map.of("vectors", Map.of("size", embedding.dimension(), "distance", "Cosine")))
+                        .retrieve().body(JsonNode.class);
+            }
+            collectionReady = true;
+        }
+    }
+
+    private List<Float> toList(float[] v) {
+        Float[] boxed = new Float[v.length];
+        for (int i = 0; i < v.length; i++) {
+            boxed[i] = v[i];
+        }
+        return List.of(boxed);
     }
 }

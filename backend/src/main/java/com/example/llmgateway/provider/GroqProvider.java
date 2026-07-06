@@ -33,7 +33,7 @@ public class GroqProvider implements LlmProvider {
     }
 
     private GatewayProperties.Groq cfg() {
-        return props.getProviders().getGroq();
+        return props.providers().groq();
     }
 
     @Override
@@ -43,32 +43,32 @@ public class GroqProvider implements LlmProvider {
 
     @Override
     public boolean configured() {
-        return cfg().getApiKey() != null && !cfg().getApiKey().isBlank();
+        return !cfg().apiKey().isBlank();
     }
 
     @Override
     public ProviderResult complete(List<Message> messages, double temperature, Integer maxTokens) {
         JsonNode resp = rest.post()
-                .uri(cfg().getBaseUrl() + "/chat/completions")
-                .header(HttpHeaders.AUTHORIZATION, "Bearer " + cfg().getApiKey())
+                .uri(cfg().baseUrl() + "/chat/completions")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + cfg().apiKey())
                 .body(body(messages, temperature, maxTokens, false))
                 .retrieve()
                 .body(JsonNode.class);
         String content = resp.path("choices").path(0).path("message").path("content").asText("");
-        JsonNode usage = resp.path("usage");
         return new ProviderResult(content,
-                resp.path("model").asText(cfg().getModel()),
+                resp.path("model").asText(cfg().model()),
                 name(),
-                usage.path("prompt_tokens").asInt(LlmProvider.estimateTokens(joined(messages))),
-                usage.path("completion_tokens").asInt(LlmProvider.estimateTokens(content)));
+                resp.path("usage").path("prompt_tokens").asInt(0),
+                resp.path("usage").path("completion_tokens").asInt(0));
     }
 
+    /** Real streaming: forward each SSE delta as it arrives, keep the full text for caching. */
     @Override
     public ProviderResult stream(List<Message> messages, double temperature, Integer maxTokens, Consumer<String> onDelta) {
         try {
             HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create(cfg().getBaseUrl() + "/chat/completions"))
-                    .header("Authorization", "Bearer " + cfg().getApiKey())
+                    .uri(URI.create(cfg().baseUrl() + "/chat/completions"))
+                    .header("Authorization", "Bearer " + cfg().apiKey())
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(
                             mapper.writeValueAsString(body(messages, temperature, maxTokens, true))))
@@ -83,35 +83,27 @@ public class GroqProvider implements LlmProvider {
                 if (!line.startsWith("data: ") || line.contains("[DONE]")) {
                     return;
                 }
-                try {
-                    JsonNode node = mapper.readTree(line.substring(6));
-                    String delta = node.path("choices").path(0).path("delta").path("content").asText("");
-                    if (!delta.isEmpty()) {
-                        full.append(delta);
-                        onDelta.accept(delta);
-                    }
-                    JsonNode u = node.path("x_groq").path("usage");
-                    if (!u.isMissingNode()) {
-                        usage[0] = u.path("prompt_tokens").asInt(0);
-                        usage[1] = u.path("completion_tokens").asInt(0);
-                    }
-                } catch (Exception ignored) {
+                JsonNode node = mapper.readTree(line.substring(6));
+                String delta = node.path("choices").path(0).path("delta").path("content").asText("");
+                if (!delta.isEmpty()) {
+                    full.append(delta);
+                    onDelta.accept(delta);
+                }
+                JsonNode u = node.path("x_groq").path("usage");
+                if (!u.isMissingNode()) {
+                    usage[0] = u.path("prompt_tokens").asInt(0);
+                    usage[1] = u.path("completion_tokens").asInt(0);
                 }
             });
-            String content = full.toString();
-            int pt = usage[0] > 0 ? usage[0] : LlmProvider.estimateTokens(joined(messages));
-            int ct = usage[1] > 0 ? usage[1] : LlmProvider.estimateTokens(content);
-            return new ProviderResult(content, cfg().getModel(), name(), pt, ct);
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Exception e) {
+            return new ProviderResult(full.toString(), cfg().model(), name(), usage[0], usage[1]);
+        } catch (java.io.IOException | InterruptedException e) {
             throw new RuntimeException("Groq stream failed: " + e.getMessage(), e);
         }
     }
 
     private Map<String, Object> body(List<Message> messages, double temperature, Integer maxTokens, boolean stream) {
         Map<String, Object> body = new HashMap<>();
-        body.put("model", cfg().getModel());
+        body.put("model", cfg().model());
         body.put("messages", messages.stream()
                 .map(m -> Map.of("role", m.role(), "content", m.content()))
                 .toList());
@@ -123,13 +115,5 @@ public class GroqProvider implements LlmProvider {
             body.put("stream", true);
         }
         return body;
-    }
-
-    private String joined(List<Message> messages) {
-        StringBuilder sb = new StringBuilder();
-        for (Message m : messages) {
-            sb.append(m.content()).append('\n');
-        }
-        return sb.toString();
     }
 }

@@ -8,9 +8,9 @@ import java.util.List;
 import java.util.function.Consumer;
 
 /**
- * Deterministic no-cost provider used as a final fallback and for load
- * testing — lets the whole cluster (and 100K-request k6 runs) work with no
- * provider API keys, while exercising the exact same gateway code paths.
+ * Deterministic no-cost provider, last in the failover order: it lets the
+ * whole cluster and 100K+-request load tests run with no API keys at $0
+ * while exercising the exact same gateway code paths (real pricing applied).
  */
 @Component
 public class MockProvider implements LlmProvider {
@@ -33,25 +33,22 @@ public class MockProvider implements LlmProvider {
 
     @Override
     public ProviderResult complete(List<Message> messages, double temperature, Integer maxTokens) {
-        long latency = props.getProviders().getMock().getLatencyMs();
-        if (latency > 0) {
-            try {
-                Thread.sleep(latency);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
+        try {
+            Thread.sleep(props.providers().mock().latencyMs());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
-        String prompt = messages.isEmpty() ? "" : messages.get(messages.size() - 1).content();
+        String prompt = messages.get(messages.size() - 1).content();
         String content = "This is a simulated LLM answer produced by the gateway's mock provider "
                 + "(used for keyless demos and load benchmarking). Your prompt was "
                 + prompt.split("\\s+").length + " words long and hashed to "
                 + Integer.toHexString(prompt.hashCode()) + ".";
         int promptTokens = 0;
         for (Message m : messages) {
-            promptTokens += LlmProvider.estimateTokens(m.content());
+            promptTokens += m.content().length() / 4;
         }
-        return new ProviderResult(content, props.getProviders().getMock().getModel(), name(),
-                promptTokens, LlmProvider.estimateTokens(content));
+        return new ProviderResult(content, props.providers().mock().model(), name(),
+                Math.max(1, promptTokens), content.length() / 4);
     }
 
     @Override

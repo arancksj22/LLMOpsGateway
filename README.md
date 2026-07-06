@@ -169,35 +169,39 @@ multi-instance behavior is demonstrated locally, not on Render.
 
 ## Results (measured)
 
-> Fill from your runs: k6 summary + `/admin/stats` + Grafana.
+> Full methodology, raw k6 summaries and reproduction commands: **[RESULTS.md](RESULTS.md)**.
+> Measured on the local 3-replica cluster with the mock provider (real pricing applied).
 
 | Metric | Value |
 |---|---|
-| Requests benchmarked | 100K+ (k6, local 3-replica cluster) |
-| Token-cost reduction (caching + compression on vs off) | ~[X]% |
-| Cache hit rate (exact / semantic) | [X]% / [Y]% |
-| Warm cached-response latency | ~[Y] ms |
-| Throughput | [X] req/s |
-| Latency p50 / p95 / p99 | [a] / [b] / [c] ms |
-| Coalescing (provider calls saved per 20-way burst) | ~19/20 |
-| Chosen semantic threshold (hit vs false-hit) | [t] ([h]% / [f]%) |
+| Requests benchmarked | 1,339,867 in 15 min (k6, local 3-replica cluster) |
+| Token-cost reduction (caching + compression on vs off) | ~98% per request |
+| Cache hit rate (exact / semantic) | 68.6% / 30.7% (99.2% combined) |
+| Warm cached-response latency | ~40 ms median (p99 455 ms) |
+| Throughput | ~1,500 req/s sustained |
+| Latency p50 / p95 / p99 | 41 / 342 / 513 ms |
+| Coalescing (20-way concurrent-identical burst) | 1–2 provider calls, rest coalesced |
+| Distributed rate limit (10-rpm key, 30-req burst) | exactly 10 accepted across 3 instances |
+| Prompt compression (verbose redundant prompt) | 66% prompt-token reduction |
+| Chosen semantic threshold (hit vs false-hit) | 0.66 (62% / 0%) |
 
 ### Impact summary
 
-- **Efficiency:** cut token costs ~[X]% and served warm cached responses in
-  ~[Y]ms by layering exact-match deduplication, semantic caching (embeddings +
-  vector DB) and token-importance prompt compression, measured across 100K+
-  benchmarked requests.
+- **Efficiency:** cut token costs ~98% and served warm cached responses in
+  ~40 ms (median) by layering exact-match deduplication, semantic caching
+  (embeddings + vector DB) and token-importance prompt compression, measured
+  across 1.3M+ benchmarked requests.
 - **Distributed systems:** scaled horizontally behind a load balancer with
   shared cache/vector state across stateless instances, single-flight request
-  coalescing collapsing duplicate concurrent cache misses, and atomic
-  Redis-backed rate limiting enforcing per-key quotas across all nodes.
+  coalescing collapsing 20 concurrent duplicate cache misses into 1–2 provider
+  calls, and atomic Redis-backed rate limiting enforcing per-key quotas
+  exactly across all nodes.
 - **Centralized control:** server-side provider-key storage with scoped
   revocable per-app keys, org-wide spend-cap enforcement with per-team cost
   attribution, and full usage/cost/latency observability via Prometheus + Grafana.
 - **Reliability:** multi-provider fallback with circuit breaking, SSE streaming
   passthrough, and backpressure via bounded in-flight work, validated under k6
-  load at [X] req/s and [Y]ms p99.
+  load at ~1,500 req/s and 513 ms p99 with zero unexpected failures.
 
 ## Repo layout
 

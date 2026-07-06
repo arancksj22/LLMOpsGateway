@@ -13,12 +13,13 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 
-/** OpenAI-compatible chat completions endpoint (JSON or SSE streaming). */
+/** OpenAI-compatible chat completions endpoint (JSON, or SSE when stream=true). */
 @RestController
 public class ChatController {
 
@@ -41,6 +42,11 @@ public class ChatController {
         return chatService.chat(req, key);
     }
 
+    /**
+     * SSE streaming passthrough: deltas are forwarded to the client as they
+     * arrive (or replayed from cache) in OpenAI chunk format, while the full
+     * response is captured for caching, cost accounting and metrics.
+     */
     private SseEmitter stream(ChatRequest req, ApiKeyInfo key) {
         SseEmitter emitter = new SseEmitter(180_000L);
         String id = "chatcmpl-" + UUID.randomUUID();
@@ -49,7 +55,6 @@ public class ChatController {
                 ChatResponse full = chatService.chatStream(req, key,
                         delta -> emit(emitter, chunk(id, delta, null)));
                 emit(emitter, chunk(id, null, "stop"));
-                // final event carries usage + gateway metadata for observability
                 emitter.send(SseEmitter.event().name("gateway").data(mapper.writeValueAsString(
                         Map.of("usage", full.usage(), "gateway", full.gateway()))));
                 emitter.send(SseEmitter.event().data("[DONE]"));
@@ -70,20 +75,15 @@ public class ChatController {
     }
 
     private String chunk(String id, String delta, String finishReason) {
-        try {
-            Map<String, Object> deltaMap = delta == null ? Map.of() : Map.of("role", "assistant", "content", delta);
-            return mapper.writeValueAsString(Map.of(
-                    "id", id,
-                    "object", "chat.completion.chunk",
-                    "created", System.currentTimeMillis() / 1000,
-                    "choices", List.of(new java.util.HashMap<>() {{
-                        put("index", 0);
-                        put("delta", deltaMap);
-                        put("finish_reason", finishReason);
-                    }})));
-        } catch (Exception e) {
-            return "{}";
-        }
+        Map<String, Object> choice = new HashMap<>();
+        choice.put("index", 0);
+        choice.put("delta", delta == null ? Map.of() : Map.of("role", "assistant", "content", delta));
+        choice.put("finish_reason", finishReason);
+        return mapper.writeValueAsString(Map.of(
+                "id", id,
+                "object", "chat.completion.chunk",
+                "created", System.currentTimeMillis() / 1000,
+                "choices", List.of(choice)));
     }
 
     private void emit(SseEmitter emitter, String json) {

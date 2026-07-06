@@ -12,9 +12,16 @@ import org.springframework.stereotype.Service;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
-/** Ordered multi-provider failover with per-provider circuit breaking. */
+/**
+ * Multi-provider failover: providers are tried in configured order
+ * (groq -> gemini -> mock by default); a provider that keeps failing is
+ * skipped by its circuit breaker for a cooldown, then given one probe.
+ * Switching or reordering providers is one config change for every app.
+ */
 @Service
 public class ProviderRouter {
 
@@ -31,8 +38,8 @@ public class ProviderRouter {
         for (LlmProvider p : providerList) {
             providers.put(p.name(), p);
             breakers.put(p.name(), new CircuitBreaker(
-                    props.getCircuitBreaker().getFailureThreshold(),
-                    props.getCircuitBreaker().getCooldownSeconds() * 1000L));
+                    props.circuitBreaker().failureThreshold(),
+                    props.circuitBreaker().cooldownSeconds() * 1000L));
         }
     }
 
@@ -50,7 +57,7 @@ public class ProviderRouter {
 
     private ProviderResult route(Call call) {
         Exception last = null;
-        for (String name : props.getProviders().getOrder()) {
+        for (String name : props.providers().order()) {
             LlmProvider p = providers.get(name.trim());
             if (p == null || !p.configured()) {
                 continue;
@@ -78,7 +85,7 @@ public class ProviderRouter {
 
     public Map<String, Object> status() {
         Map<String, Object> out = new HashMap<>();
-        for (String name : props.getProviders().getOrder()) {
+        for (String name : props.providers().order()) {
             LlmProvider p = providers.get(name.trim());
             if (p != null) {
                 out.put(p.name(), Map.of(
@@ -87,5 +94,43 @@ public class ProviderRouter {
             }
         }
         return out;
+    }
+
+    /** Opens after N consecutive failures; after the cooldown lets one probe through. */
+    private static class CircuitBreaker {
+        private final int failureThreshold;
+        private final long cooldownMs;
+        private final AtomicInteger consecutiveFailures = new AtomicInteger();
+        private final AtomicLong openUntil = new AtomicLong();
+
+        CircuitBreaker(int failureThreshold, long cooldownMs) {
+            this.failureThreshold = failureThreshold;
+            this.cooldownMs = cooldownMs;
+        }
+
+        boolean allow() {
+            long until = openUntil.get();
+            if (until == 0) {
+                return true;
+            }
+            // half-open: exactly one caller wins the CAS and probes
+            return System.currentTimeMillis() >= until
+                    && openUntil.compareAndSet(until, System.currentTimeMillis() + cooldownMs);
+        }
+
+        void success() {
+            consecutiveFailures.set(0);
+            openUntil.set(0);
+        }
+
+        void failure() {
+            if (consecutiveFailures.incrementAndGet() >= failureThreshold) {
+                openUntil.set(System.currentTimeMillis() + cooldownMs);
+            }
+        }
+
+        boolean isOpen() {
+            return openUntil.get() > System.currentTimeMillis();
+        }
     }
 }

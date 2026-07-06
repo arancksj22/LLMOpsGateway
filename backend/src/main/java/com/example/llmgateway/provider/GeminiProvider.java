@@ -24,7 +24,7 @@ public class GeminiProvider implements LlmProvider {
     }
 
     private GatewayProperties.Gemini cfg() {
-        return props.getProviders().getGemini();
+        return props.providers().gemini();
     }
 
     @Override
@@ -34,7 +34,7 @@ public class GeminiProvider implements LlmProvider {
 
     @Override
     public boolean configured() {
-        return cfg().getApiKey() != null && !cfg().getApiKey().isBlank();
+        return !cfg().apiKey().isBlank();
     }
 
     @Override
@@ -49,9 +49,6 @@ public class GeminiProvider implements LlmProvider {
                 contents.add(Map.of("role", role, "parts", List.of(Map.of("text", m.content()))));
             }
         }
-        if (contents.isEmpty()) {
-            contents.add(Map.of("role", "user", "parts", List.of(Map.of("text", ""))));
-        }
         Map<String, Object> genConfig = new HashMap<>();
         genConfig.put("temperature", temperature);
         if (maxTokens != null) {
@@ -63,14 +60,13 @@ public class GeminiProvider implements LlmProvider {
         if (!system.isEmpty()) {
             body.put("systemInstruction", Map.of("parts", List.of(Map.of("text", system.toString()))));
         }
-        String url = cfg().getBaseUrl() + "/models/" + cfg().getModel() + ":generateContent?key=" + cfg().getApiKey();
+        String url = cfg().baseUrl() + "/models/" + cfg().model() + ":generateContent?key=" + cfg().apiKey();
         JsonNode resp = rest.post().uri(url).body(body).retrieve().body(JsonNode.class);
-        String content = resp.path("candidates").path(0).path("content").path("parts").path(0).path("text").asText("");
-        JsonNode usage = resp.path("usageMetadata");
-        return new ProviderResult(content,
-                cfg().getModel(),
+        return new ProviderResult(
+                resp.path("candidates").path(0).path("content").path("parts").path(0).path("text").asText(""),
+                cfg().model(),
                 name(),
-                usage.path("promptTokenCount").asInt(0),
-                usage.path("candidatesTokenCount").asInt(LlmProvider.estimateTokens(content)));
+                resp.path("usageMetadata").path("promptTokenCount").asInt(0),
+                resp.path("usageMetadata").path("candidatesTokenCount").asInt(0));
     }
 }

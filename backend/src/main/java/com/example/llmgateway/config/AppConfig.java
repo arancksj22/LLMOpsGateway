@@ -1,5 +1,7 @@
 package com.example.llmgateway.config;
 
+import com.example.llmgateway.compress.PromptCompressor;
+import com.example.llmgateway.embedding.EmbeddingService;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.config.MeterFilter;
 import io.micrometer.core.instrument.distribution.DistributionStatisticConfig;
@@ -18,9 +20,20 @@ public class AppConfig {
         return RestClient.create();
     }
 
+    /** Virtual threads for SSE streaming work. */
     @Bean
     public ExecutorService sseExecutor() {
         return Executors.newVirtualThreadPerTaskExecutor();
+    }
+
+    @Bean
+    public EmbeddingService embeddingService(GatewayProperties props, RestClient rest) {
+        return new EmbeddingService(props.embedding(), props.providers().gemini(), rest);
+    }
+
+    @Bean
+    public PromptCompressor promptCompressor(GatewayProperties props) {
+        return new PromptCompressor(props.compression());
     }
 
     /** Publish histogram buckets + p50/p95/p99 for gateway latency timers. */
