@@ -3,11 +3,13 @@
 //   k6 run k6/load_test.js                         # default: ~5 min, 100 VUs
 //   k6 run -e BASE=http://localhost:8080 -e VUS=150 -e DURATION=10m k6/load_test.js
 //
-// Traffic mix (drives the resume numbers):
-//   40% repeated identical prompts  -> exact-cache hits
-//   30% reworded variants           -> semantic-cache hits
-//   30% unique prompts              -> misses (provider calls)
+// Traffic mix — modeled on realistic LLM workloads, which are mostly unique:
+//   20% repeated identical prompts  -> exact-cache hits
+//   20% reworded variants           -> semantic-cache hits
+//   60% unique prompts              -> misses (provider calls)
 // plus a burst scenario of concurrent identical fresh prompts -> coalescing.
+// Hit rate and cost reduction are functions of this mix — make it more
+// repetitive (e.g. 40/30/30) to measure the cache-friendly upper bound.
 //
 // Run against the mock provider (PROVIDERS_ORDER=mock or no API keys) so
 // 100K+ requests cost $0 while exercising every gateway code path.
@@ -93,16 +95,48 @@ function send(prompt, tag) {
   return res;
 }
 
+// Unique prompts must be unique in MEANING, not just in string — otherwise
+// template-identical prompts all embed alike and pollute the semantic-cache
+// numbers. So each one combines a random question shape with random topics.
+const TOPICS = ['photosynthesis', 'inflation', 'volcanoes', 'jazz', 'encryption', 'gravity',
+  'antibiotics', 'origami', 'glaciers', 'chess', 'fermentation', 'satellites', 'poetry',
+  'magnets', 'coral reefs', 'taxation', 'dinosaurs', 'keyboards', 'marathon training',
+  'solar panels', 'sourdough', 'submarines', 'calligraphy', 'neurons', 'auctions',
+  'lighthouses', 'vaccines', 'typography', 'earthquakes', 'sailing', 'perfume',
+  'concrete', 'falconry', 'insurance', 'telescopes', 'pottery', 'monsoons', 'copyright',
+  'beekeeping', 'railways', 'anesthesia', 'juggling', 'wetlands', 'espresso', 'radar'];
+const QUALIFIERS = ['medieval', 'industrial', 'digital', 'coastal', 'urban', 'ancient',
+  'modern', 'experimental', 'commercial', 'artisanal', 'tropical', 'nordic', 'portable',
+  'sustainable', 'miniature', 'orbital', 'underwater', 'domestic', 'wireless', 'ceramic',
+  'synthetic', 'nomadic', 'volcanic', 'municipal'];
+const SHAPES = [
+  (a, b, c) => `How does ${a} relate to ${b} and ${c}?`,
+  (a, b, c) => `Compare ${a} with ${b} in the context of ${c}.`,
+  (a, b, c) => `What could ${a} teach us about ${b} and ${c}?`,
+  (a, b, c) => `Write one sentence connecting ${a}, ${b} and ${c}.`,
+  (a, b, c) => `Could advances in ${a} change ${b} or ${c}?`,
+  (a, b, c) => `Why might an expert in ${a} study ${b} rather than ${c}?`,
+];
+
+// qualifier+topic per slot, three slots, six shapes: ~10^9 combinations, so
+// 50K+ draws produce essentially no accidental meaning collisions
+function uniquePrompt() {
+  const pick = () => `${QUALIFIERS[Math.floor(Math.random() * QUALIFIERS.length)]} ` +
+      TOPICS[Math.floor(Math.random() * TOPICS.length)];
+  const shape = SHAPES[Math.floor(Math.random() * SHAPES.length)];
+  return `${shape(pick(), pick(), pick())} (ref ${__VU}-${__ITER})`;
+}
+
 export function mix() {
   const r = Math.random();
-  if (r < 0.4) {
+  if (r < 0.2) {
     send(REPEATED[Math.floor(Math.random() * REPEATED.length)], 'repeated');
-  } else if (r < 0.7) {
+  } else if (r < 0.4) {
     const [base, variants] = REWORDED[Math.floor(Math.random() * REWORDED.length)];
     const prompt = Math.random() < 0.3 ? base : variants[Math.floor(Math.random() * variants.length)];
     send(prompt, 'reworded');
   } else {
-    send(`Unique question ${__VU}-${__ITER}-${Date.now()}: summarize the number ${Math.random()}`, 'unique');
+    send(uniquePrompt(), 'unique');
   }
 }
 

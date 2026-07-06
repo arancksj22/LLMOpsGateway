@@ -1,108 +1,111 @@
 # Measured Results
 
-All numbers below were measured on 2026-07-06 against the local 3-replica
-docker-compose cluster (Nginx → gateway1/2/3 → Redis + Qdrant) on a single
-Windows machine, using the built-in **mock provider** (200 ms simulated
-latency, real pricing applied) so the benchmark exercises every gateway code
-path at $0 cost. Embeddings: local hash embedder, semantic threshold 0.66.
+Measured 2026-07-07 on the local 3-replica docker-compose cluster (Nginx →
+gateway1/2/3 → Redis + Qdrant) on a single Windows laptop, using the built-in
+**mock provider** (200 ms simulated latency, real pricing applied) so the
+benchmark exercises every gateway code path at $0. Embeddings: local hash
+embedder, semantic threshold 0.66.
 
-**Honest framing:** these are gateway-layer numbers from a local cluster under
-k6 load — capability validation, not production traffic. Request volume is
-reported as "benchmarked requests", never "users".
+**Honest framing:** gateway-layer numbers from a local cluster under k6 load —
+capability validation, not production traffic. Hit rate and savings are
+functions of the traffic mix, so the primary benchmark uses a **realistic,
+mostly-unique workload** (60% unique / 20% repeated / 20% reworded); a
+near-fully-repetitive stress run is reported separately as the upper bound.
 
 ---
 
-## Headline numbers (for the résumé bullets)
+## Headline numbers (primary benchmark — realistic workload)
 
 | Metric | Value |
 |---|---|
-| Requests benchmarked (Run A) | **1,339,867** in 15 min |
-| Throughput | **1,488 req/s** sustained (150 VUs, 3 replicas) |
-| Token-cost reduction (optimizations on vs off) | **98.0%** per request |
-| Cache hit rate | **99.2%** (68.6% exact + 30.7% semantic) |
-| Warm cached-response latency | **40 ms median** (p95 330 ms, p99 455 ms) |
-| End-to-end latency (all requests) | p50 **41 ms** / p95 342 ms / **p99 513 ms** |
-| Coalescing (20 concurrent identical misses) | **1–2 provider calls**, rest coalesced/cache-hit |
+| Requests benchmarked | **141,885** in 7 min (150 VUs, 3 replicas) |
+| Cache hit rate | **47.1%** (39.6% exact + 7.6% semantic) |
+| Provider spend avoided | **42.6%** ($0.258 saved of $0.605 potential) |
+| Provider tokens avoided | **40.8%** (3.48M of 8.52M) |
+| Warm cached-response latency | **16 ms median** (p99 507 ms) |
+| End-to-end latency | p50 468 ms / p95 1.18 s / p99 1.71 s at ~340 req/s |
+| Coalescing (20 concurrent identical misses) | **1–2 provider calls**, verified separately |
 | Distributed rate limit accuracy | 10-rpm key → exactly **10 accepted / 20 rejected** across 3 instances |
 | Prompt compression (verbose, redundant prompt) | **66% prompt-token reduction** |
-| Semantic threshold (data-justified) | **0.66** → 62% hit rate, **0% false hits** |
-| Error rate under load | 0% unexpected failures (1.51% were clean backpressure 503s) |
+| Semantic threshold (data-justified) | **0.66** → 62% paraphrase recall, **0% false hits** |
+| Failures | 0% unexpected (0.84% were clean backpressure 503s) |
 
----
+## Benchmark 1 — realistic workload (primary)
 
-## Run A — full pipeline ON (the 100K+ benchmark)
-
-Command:
-
-```powershell
-docker compose down -v; docker compose up -d   # clean state
-docker run -d --name k6runA --network llmopsgateway_default -v "${PWD}\k6:/scripts" `
-  -e BASE=http://nginx:80 -e VUS=150 -e DURATION=15m grafana/k6 run /scripts/load_test.js
-```
-
-Traffic mix: 40% repeated prompts, 30% reworded variants, 30% unique, plus
+Traffic mix modeled on real LLM usage, which is mostly unique queries:
+**60% unique** (collision-free generated questions), **20% repeated**
+(a pool of 10 fixed prompts), **20% reworded** (paraphrase variants), plus
 30-VU bursts of identical fresh prompts.
 
-k6 summary (`docker logs k6runA`):
-
-```
-http_reqs......................: 1,339,867   1,488.5/s
-http_req_duration..............: avg=99.9ms  med=40.7ms  p(90)=274.6ms  p(95)=341.5ms  p(99)=513.0ms
-http_req_failed................: 1.51%  (20,268 — all clean 503 backpressure rejections, see below)
-gateway_cache_exact............: 904,885     (68.6% of served)
-gateway_cache_semantic.........: 404,660     (30.7% of served)
-gateway_cache_miss.............: 10,054      (0.76% of served)
-gateway_cached_latency.........: avg=96.1ms  med=40.2ms  p(95)=330.2ms  p(99)=455.4ms
-gateway_coalesced..............: 122
+```powershell
+docker compose down -v; docker compose up -d
+docker run --rm --network llmopsgateway_default -v "${PWD}\k6:/scripts" `
+  -e BASE=http://nginx:80 -e VUS=150 -e DURATION=7m grafana/k6 run /scripts/load_test.js
 ```
 
-Gateway-side (`/admin/stats`, cluster-wide via Redis):
+k6 summary (optimizations ON):
+
+```
+http_reqs......................: 141,885   337.6/s
+gateway_cache_exact............: 55,651    (39.6% of served)
+gateway_cache_semantic.........: 10,670    (7.6% of served)
+gateway_cache_miss.............: 74,367    (52.9% of served)
+gateway_cached_latency.........: med=16.2ms   p(95)=219.9ms  p(99)=507.1ms
+http_req_duration..............: med=467.8ms  p(95)=1.18s    p(99)=1.71s
+http_req_failed................: 0.84% (1,197 — all clean 503 backpressure rejections)
+```
+
+Gateway-side (`/admin/stats`, cluster-wide):
 
 | Field | Value |
 |---|---|
-| requests processed | 1,319,599 |
-| hit_rate | 0.992 |
-| provider spend | **$0.0428** |
-| cost saved by caching | **$5.12** |
-| tokens saved by caching | 69,323,186 |
-| backpressure rejections | 20,268 (clean 503s at ~1,500 req/s vs the 64-in-flight/instance bound — graceful overload handling working as designed) |
+| requests processed | 140,688 |
+| provider spend | $0.3476 |
+| spend avoided by caching | $0.2578 → **42.6% of the $0.6054 potential** |
+| tokens used / avoided | 5.04M / **3.48M (40.8%)** |
+| backpressure rejections | 1,195 clean 503s |
 
-## Run B — optimizations OFF (baseline for the cost-reduction %)
+**Baseline comparison (optimizations OFF, same mix, 3 min):** 141,077
+requests at 783 req/s, 100% misses, $0.4435 over 140,669 requests. Per-request
+cost: $3.15e-6 (off) vs $2.47e-6 (on) → **21.6% cheaper per request**. This
+A/B number is *lower* than the 42.6% spend-avoided figure because the cache
+disproportionately catches the short, cheap repeated prompts while the
+expensive unique prompts always miss — a real workload effect, reported
+as-is. (The baseline also still benefits from single-flight coalescing, which
+can't be disabled, making both numbers conservative.)
 
-Same traffic, 5 minutes, with `EXACT_CACHE_ENABLED=false
-SEMANTIC_CACHE_ENABLED=false COMPRESSION_ENABLED=false`:
+**Notable trade-off surfaced by this benchmark:** the all-miss baseline is
+actually *faster* end-to-end (p50 205 ms vs 468 ms) because misses in the
+cached configuration pay for embedding + vector search + cache writes on a
+CPU-contended laptop. Semantic caching buys cost, not miss-latency — worth it
+when hit-rate × provider-cost outweighs the miss overhead.
 
-```
-http_reqs......................: 298,954   995.9/s
-gateway_cache_miss.............: 298,453   (100% — every request billed)
-http_req_duration..............: med=105.3ms  p(99)=343.9ms
-provider spend (/admin/stats)..: $0.4830 over 298,455 requests
-```
+## Benchmark 2 — cache-saturation stress run (upper bound)
 
-**Cost reduction** = 1 − (per-request cost A / per-request cost B)
-= 1 − (0.0428/1,319,599) / (0.4830/298,455)
-= 1 − (3.24e-8 / 1.62e-6) = **98.0%**
+An earlier 15-minute run with **near-fully-repetitive traffic** (its "unique"
+prompts were template-generated and matched each other semantically, making
+the effective workload ~99% cache-friendly). Reported as the upper bound and
+as the gateway's hot-path capacity measurement:
 
-(Conservative: Run B still benefited from single-flight coalescing of
-concurrent duplicates, which cannot be disabled — a fully naive baseline
-would be even more expensive.)
+- **1,339,867 requests at 1,488 req/s** sustained, p50 41 ms / p99 513 ms
+- Hit rate 99.2%, warm cache median 40 ms, $5.12 saved vs $0.043 spent (≈98%)
+- 1.51% clean backpressure 503s at ~1,500 req/s, zero unexpected failures
+
+Quote these only with the "cache-friendly / repetitive workload" qualifier.
 
 ## Distributed correctness (scripts/distributed_check.py)
 
 ```
 [PASS] shared cache: first=miss, then 6/6 exact hits served by instances ['gw1', 'gw2', 'gw3']
-[PASS] single-flight: 20 concurrent identical requests -> 2 provider call(s), 11 coalesced, 7 cache hits
+[PASS] single-flight: 20 concurrent identical requests -> 1 provider call(s), 12 coalesced, 7 cache hits
 [PASS] rate limit: key limited to 10 rpm -> 10 accepted, 20 rejected (429) out of 30 across the cluster
 3/3 distributed checks passed
 ```
 
-(An earlier run collapsed the same 20-way burst to exactly **1** provider
-call with 19 coalesced; 1–2 calls per burst is the observed range.)
-
 ## Semantic-cache threshold sweep (scripts/threshold_eval.py)
 
-16 equivalent + 16 non-equivalent labeled pairs, evaluated through the
-gateway's own embedding (`/admin/similarity`):
+16 equivalent + 16 non-equivalent labeled pairs through the gateway's own
+embedding (`/admin/similarity`):
 
 | threshold | hit rate | false-hit rate |
 |---|---|---|
@@ -113,58 +116,65 @@ gateway's own embedding (`/admin/similarity`):
 | 0.76 | 31% | 0% |
 | 0.82 | 6% | 0% |
 
-0.66 is the highest hit rate with zero false hits — false hits (serving a
-wrong cached answer) are far more costly than misses, so the zero-false-hit
-point was chosen over 0.60.
+0.66 is the highest recall with zero false hits — serving a wrong cached
+answer is far worse than a miss.
 
 ## Prompt compression
 
 An 82-word verbose prompt (filler phrases + duplicated sentences) sent with
-`"compress": true`: **72 of ~109 estimated tokens removed (66% reduction)**,
-meaning preserved (dedup + filler/stopword stripping). Note: the load-test
-prompts are short (< 40-word compression floor), so compression contributed
-~0 to Run A — the 98% cost reduction is attributable to caching; compression
-helps long, redundant prompts specifically.
+`"compress": true`: **72 of ~109 estimated tokens removed (66% reduction)**.
+The benchmark prompts are short (< 40-word compression floor), so compression
+contributed ~0 above — it targets long, redundant prompts specifically.
+
+## Benchmark-validity note (methodology)
+
+The first version of this benchmark generated "unique" prompts from a single
+template ("Unique question N: summarize the number 0.83..."), which are unique
+as strings but nearly identical to the embedder — they matched *each other*
+in the semantic cache and inflated the hit rate. Caught because the semantic
+hit share was implausibly high, fixed by generating unique prompts from ~10⁹
+qualifier×topic×shape combinations, and the repetitive run was relabeled as
+the upper bound. Lesson: validate that benchmark inputs measure what you
+think they measure.
 
 ---
 
 ## Filled résumé bullets
 
-- **Efficiency:** Built a distributed LLM gateway that cut token costs **~98%**
-  and served warm cached responses in **~40 ms (median)** by layering
-  exact-match deduplication, semantic caching (embeddings + vector database),
-  and token-importance prompt compression, measured across **1.3M+ (100K+)
+- **Efficiency:** Built a distributed LLM gateway that avoided **~43% of
+  provider spend and ~41% of tokens** on a realistic mostly-unique workload
+  (up to 98–99% on repetitive traffic) and served warm cached responses in
+  **16 ms median**, by layering exact-match deduplication, semantic caching
+  (embeddings + vector DB) and prompt compression — measured across **140K+
   benchmarked requests**.
-- **Distributed systems:** Scaled the gateway horizontally behind a load
-  balancer with shared cache and vector state across stateless instances,
-  using single-flight request coalescing to collapse **20 concurrent duplicate
-  cache misses into 1–2 provider calls** and atomic Redis-backed rate limiting
-  to enforce per-key quotas **exactly (10/10 at 10 rpm) across all nodes**.
-- **Centralized control:** Built a central control plane for organizational
-  LLM access — server-side provider-key storage with scoped, revocable
-  per-application keys, org-wide spend-cap enforcement with per-team cost
-  attribution, and full usage/cost/latency observability via Prometheus and
-  Grafana.
-- **Reliability:** Engineered fault tolerance with multi-provider fallback and
-  circuit breaking, SSE streaming passthrough, and backpressure via bounded
-  in-flight work, validated under k6 load testing at **~1,500 req/s** with
-  **513 ms p99** and zero unexpected failures.
+- **Distributed systems:** Scaled horizontally behind a load balancer with
+  shared cache and vector state across stateless instances, single-flight
+  coalescing collapsing 20 concurrent duplicate misses into 1–2 provider
+  calls, and atomic Redis-backed rate limiting enforcing per-key quotas
+  exactly (10/10 at 10 rpm) across all nodes.
+- **Centralized control:** Server-side provider-key storage with scoped
+  revocable per-app keys, org-wide spend caps with per-team attribution, and
+  full cost/latency observability via Prometheus + Grafana.
+- **Reliability:** Multi-provider fallback with circuit breaking, SSE
+  streaming passthrough, and semaphore backpressure that converted 100% of
+  overload into clean 503s (zero unexpected failures), validated under k6 at
+  up to **1,500 req/s** (cache-saturation stress) and **513 ms p99**.
 
 ## Reproduce
 
 ```powershell
-# Run A
+# Primary benchmark (Run A)
 docker compose down -v; docker compose up -d
 docker run --rm --network llmopsgateway_default -v "${PWD}\k6:/scripts" `
-  -e BASE=http://nginx:80 -e VUS=150 -e DURATION=15m grafana/k6 run /scripts/load_test.js
+  -e BASE=http://nginx:80 -e VUS=150 -e DURATION=7m grafana/k6 run /scripts/load_test.js
 curl http://localhost:8080/admin/stats
 
-# Run B (baseline)
+# Baseline (Run B)
 docker compose down -v
 $env:EXACT_CACHE_ENABLED="false"; $env:SEMANTIC_CACHE_ENABLED="false"; $env:COMPRESSION_ENABLED="false"
 docker compose up -d
 docker run --rm --network llmopsgateway_default -v "${PWD}\k6:/scripts" `
-  -e BASE=http://nginx:80 -e VUS=150 -e DURATION=5m grafana/k6 run /scripts/load_test.js
+  -e BASE=http://nginx:80 -e VUS=150 -e DURATION=3m grafana/k6 run /scripts/load_test.js
 curl http://localhost:8080/admin/stats
 Remove-Item Env:EXACT_CACHE_ENABLED, Env:SEMANTIC_CACHE_ENABLED, Env:COMPRESSION_ENABLED
 

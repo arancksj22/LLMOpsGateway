@@ -231,8 +231,9 @@ docker run --rm --network llmopsgateway_default -v "${PWD}\k6:/scripts" `
 
 (Linux/macOS: `-v "$PWD/k6:/scripts"`.)
 
-Traffic mix: 40% repeated (exact hits), 30% reworded (semantic hits), 30%
-unique (misses), plus 30-VU bursts of identical fresh prompts (coalescing).
+Traffic mix (realistic, mostly unique): 20% repeated (exact hits), 20%
+reworded (semantic hits), 60% genuinely unique (misses), plus 30-VU bursts of
+identical fresh prompts (coalescing).
 
 ### Reading the results
 
@@ -247,8 +248,9 @@ The k6 summary gives you most résumé numbers directly:
 Cross-check cluster-wide totals in `curl http://localhost:8080/admin/stats`
 and watch it live in Grafana (http://localhost:3000 → "LLM Gateway").
 
-Reference smoke run (30 VUs, 60 s, mock provider, this machine):
-483 req/s, 29,027 requests, 0% failures, 95.6% hit rate, p95 = 188 ms.
+Reference numbers from measured runs are in [RESULTS.md](RESULTS.md):
+~47% hit rate / ~43% spend avoided on the realistic mix; ~1,500 req/s on the
+cache-saturation stress mix.
 
 ### Measuring token-cost reduction (on vs off)
 

@@ -12,6 +12,8 @@ cache hit with latency, tokens, cost and the serving instance.
 
 > **Full operating manual** — every command, key, endpoint, load-test and
 > tuning workflow — is in **[USAGE.md](USAGE.md)**.
+> **Design rationale & interview prep** — every architectural decision, its
+> alternatives and trade-offs, plus 20 Q&As — is in **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
 ## Why centralized?
 
@@ -138,8 +140,10 @@ k6 run k6/load_test.js                          # ~5 min @ 100 VUs
 k6 run -e VUS=150 -e DURATION=15m k6/load_test.js   # longer run for 100K+ requests
 ```
 
-Traffic mix: 40% repeated (exact hits), 30% reworded (semantic hits), 30%
-unique (misses), plus bursts of concurrent identical prompts (coalescing).
+Traffic mix (realistic, mostly unique): 20% repeated (exact hits), 20%
+reworded (semantic hits), 60% genuinely unique (misses), plus bursts of
+concurrent identical prompts (coalescing). Make the mix more repetitive to
+measure the cache-friendly upper bound.
 Custom metrics in the k6 summary: `gateway_cache_exact/semantic/miss`,
 `gateway_coalesced`, `gateway_cached_latency`. Run against the mock provider
 (default with no keys) so it costs $0.
@@ -171,15 +175,17 @@ multi-instance behavior is demonstrated locally, not on Render.
 
 > Full methodology, raw k6 summaries and reproduction commands: **[RESULTS.md](RESULTS.md)**.
 > Measured on the local 3-replica cluster with the mock provider (real pricing applied).
+> Primary numbers use a **realistic mostly-unique traffic mix** (60% unique / 20%
+> repeated / 20% reworded); a near-fully-repetitive stress run is the upper bound.
 
 | Metric | Value |
 |---|---|
-| Requests benchmarked | 1,339,867 in 15 min (k6, local 3-replica cluster) |
-| Token-cost reduction (caching + compression on vs off) | ~98% per request |
-| Cache hit rate (exact / semantic) | 68.6% / 30.7% (99.2% combined) |
-| Warm cached-response latency | ~40 ms median (p99 455 ms) |
-| Throughput | ~1,500 req/s sustained |
-| Latency p50 / p95 / p99 | 41 / 342 / 513 ms |
+| Requests benchmarked | 141,885 in 7 min (k6, local 3-replica cluster) |
+| Cache hit rate (exact / semantic) | 39.6% / 7.6% (47.1% combined) |
+| Provider spend avoided | ~43% (tokens avoided: ~41%) |
+| Warm cached-response latency | 16 ms median (p99 507 ms) |
+| Throughput / latency (realistic mix) | ~340 req/s · p50 468 ms · p99 1.71 s |
+| Upper bound (repetitive stress run) | 1.34M requests · ~1,500 req/s · p99 513 ms · 99% hit rate |
 | Coalescing (20-way concurrent-identical burst) | 1–2 provider calls, rest coalesced |
 | Distributed rate limit (10-rpm key, 30-req burst) | exactly 10 accepted across 3 instances |
 | Prompt compression (verbose redundant prompt) | 66% prompt-token reduction |
@@ -187,10 +193,11 @@ multi-instance behavior is demonstrated locally, not on Render.
 
 ### Impact summary
 
-- **Efficiency:** cut token costs ~98% and served warm cached responses in
-  ~40 ms (median) by layering exact-match deduplication, semantic caching
-  (embeddings + vector DB) and token-importance prompt compression, measured
-  across 1.3M+ benchmarked requests.
+- **Efficiency:** avoided ~43% of provider spend and ~41% of tokens on a
+  realistic mostly-unique workload (up to 98–99% on repetitive traffic) and
+  served warm cached responses in 16 ms median, by layering exact-match
+  deduplication, semantic caching (embeddings + vector DB) and prompt
+  compression — measured across 140K+ benchmarked requests.
 - **Distributed systems:** scaled horizontally behind a load balancer with
   shared cache/vector state across stateless instances, single-flight request
   coalescing collapsing 20 concurrent duplicate cache misses into 1–2 provider
@@ -201,7 +208,8 @@ multi-instance behavior is demonstrated locally, not on Render.
   attribution, and full usage/cost/latency observability via Prometheus + Grafana.
 - **Reliability:** multi-provider fallback with circuit breaking, SSE streaming
   passthrough, and backpressure via bounded in-flight work, validated under k6
-  load at ~1,500 req/s and 513 ms p99 with zero unexpected failures.
+  at up to ~1,500 req/s (cache-saturation stress) and 513 ms p99 with zero
+  unexpected failures.
 
 ## Repo layout
 
