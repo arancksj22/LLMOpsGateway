@@ -1,98 +1,136 @@
-# Distributed LLM Gateway
+<div align="center">
 
-A self-hostable **Spring Boot** gateway that applications route their LLM calls
-through instead of calling providers (Groq / Gemini / OpenAI-compatible)
-directly. One controlled path for all LLM traffic: it **avoids calls** it can
-(exact + semantic caching, request coalescing), **shrinks calls** it can't
-(prompt compression), and **centrally controls and observes everything**
-(scoped keys, budgets, rate limits, Prometheus/Grafana).
+# Distributed LLMOps Gateway
 
-Demo UI included — send a prompt, watch it come back as an exact/semantic
-cache hit with latency, tokens, cost and the serving instance.
+**One controlled path for all of an organization's LLM traffic: cache it, coalesce it, budget it, observe it.**
 
-> **Full operating manual** — every command, key, endpoint, load-test and
-> tuning workflow — is in **[USAGE.md](USAGE.md)**.
-> **Design rationale & interview prep** — every architectural decision, its
-> alternatives and trade-offs, plus 20 Q&As — is in **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+*A horizontally scaled Spring Boot proxy that avoided **43% of LLM provider spend** across **140K+ benchmarked requests**, serving cached answers in **16 ms** instead of 200 ms+ provider round-trips.*
 
-## Why centralized?
+[![Java](https://img.shields.io/badge/Java-21-orange?logo=openjdk&logoColor=white)](https://openjdk.org/)
+[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4-6DB33F?logo=springboot&logoColor=white)](https://spring.io/projects/spring-boot)
+[![Redis](https://img.shields.io/badge/Redis-coordination-DC382D?logo=redis&logoColor=white)](https://redis.io/)
+[![Qdrant](https://img.shields.io/badge/Qdrant-vector%20search-BC1439)](https://qdrant.tech/)
+[![Docker Compose](https://img.shields.io/badge/Docker-3--replica%20cluster-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
+[![k6](https://img.shields.io/badge/k6-1.3M%2B%20requests-7D64FF?logo=k6&logoColor=white)](https://k6.io/)
+[![CI](https://img.shields.io/badge/CI-GitHub%20Actions-2088FF?logo=githubactions&logoColor=white)](.github/workflows/ci.yml)
 
-Per-app libraries can't do the things that require seeing **all** traffic at once:
+**[Quickstart](#quickstart-zero-keys-zero-config)** |
+**[Measured Results](#measured-results)** |
+**[How It Works](#how-a-request-flows)** |
+**[Architecture Deep-Dive](ARCHITECTURE.md)** |
+**[Operating Manual](USAGE.md)** |
+**[Benchmarks](RESULTS.md)**
 
-- **Org-wide spend caps & cost attribution** — "the company spends at most $X/month",
-  attributed per key/team, enforced with atomic Redis counters. No single app can do this.
-- **Centralized API-key management** — real provider keys live server-side only;
-  apps get scoped, revocable internal keys (`POST /admin/keys`).
-- **Global rate limiting** — providers rate-limit your whole org; only a central
-  point sees total traffic and can throttle under that ceiling.
-- **Single point of policy, provider switching & observability** — every call's
-  cost/latency/tokens in one Grafana dashboard.
+</div>
 
-Caching alone doesn't justify a gateway (it works per-app); centralization does.
-The efficiency features ride on top of it.
+---
 
-## Why distributed?
+## The problem
 
-The gateway is shared critical infrastructure on the request path, so it runs
-as **multiple stateless replicas behind Nginx**: throughput beyond one
-instance, no single point of failure, rolling deploys. All shared state lives
-in central stores every instance reaches:
+Every team in a company is wiring LLM calls into their apps, and every app calls the provider directly. The result:
 
-- **Shared response cache** — Redis (exact) + Qdrant (semantic vectors): a
-  response cached by one instance is served by any other.
-- **Single-flight coalescing** — concurrent identical cache misses across
-  *all* instances trigger one provider call (Redis lock + shared result).
-- **Distributed rate limiting & budgets** — atomic Redis counters hold in aggregate.
+- **Duplicated spend.** Ten apps pay ten times for the same (or same-*meaning*) question.
+- **Scattered secrets.** Provider API keys copy-pasted into every codebase.
+- **No control.** Nobody can enforce *"we spend at most $X per month"* or see who spent what, because **no single app sees the total**.
+- **Shared limits, unshared awareness.** Providers rate-limit the whole org; apps trip over each other blindly.
 
-> **Honest scope note:** at small scale a single instance suffices. Distribution
-> here demonstrates the *capability* — validated with a local docker-compose
-> cluster and k6 load testing — not a claim of production traffic or a scaled
-> cloud deployment. The public demo is a single free-tier instance.
+A per-app caching library cannot fix this. These problems require seeing all traffic at once, and that is exactly what this gateway is: the single, horizontally scaled path every LLM call flows through.
+
+> *For every request: first try to **skip** the call; if we must call, make it **cheap**; and no matter what, **control and observe** it.*
 
 ## Architecture
 
+<!-- =====================================================================
+     ARCHITECTURE DIAGRAM: drop docs/architecture.png here:
+     ![Architecture diagram](docs/architecture.png)
+     ===================================================================== -->
+
 ```
-clients ──> Nginx LB ──> gateway1 / gateway2 / gateway3   (stateless Spring Boot)
-                            │            │
-                            │            ├── Redis    — exact cache, rate limits, budgets,
-                            │            │              single-flight locks, keys, live stats
-                            │            └── Qdrant   — semantic cache vectors
-                            │
-                            └── providers: Groq -> Gemini -> mock (ordered failover,
-                                           per-provider circuit breakers)
+  clients --> Nginx (round-robin LB)
+                |--> gateway1 --+          3 stateless Spring Boot replicas
+                |--> gateway2 --+--> Redis   . exact cache  . rate-limit counters
+                |--> gateway3 --+            . spend counters . coalescing locks
+                                |            . API keys . live cluster stats
+                                |--> Qdrant  . semantic-cache vectors (cosine ANN)
+                                |
+                                +--> Providers: Groq -> Gemini -> mock
+                                     (ordered failover + circuit breakers)
 
-Prometheus scrapes /actuator/prometheus on every replica -> Grafana dashboard
+  Prometheus scrapes /actuator/prometheus on every replica --> Grafana dashboard
 ```
 
-**Request pipeline:** auth → rate limit → backpressure (bounded in-flight, clean
-503s) → prompt compression → exact cache → semantic cache (embedding + vector
-search, tunable threshold, TTL, skip-if-high-temperature policy) → budget check
-→ single-flight → provider failover → cache store + cost accounting + metrics.
+Instances hold **zero state**: every replica is identical and disposable. All shared state (cache, locks, counters, keys) lives in Redis and Qdrant, which is precisely what makes horizontal scaling a `docker compose` one-liner instead of a rewrite.
 
-**Embeddings** are behind an interface: `hash` (local, zero-dependency,
-offline-friendly) or `gemini` (free hosted `text-embedding-004`, real semantic
-similarity). A **mock provider** is the final failover so the whole cluster and
-100K-request load tests run with **no API keys at $0**.
+## Measured results
 
-## Run the local cluster
+The primary benchmark uses a **realistic mostly-unique traffic mix** (60% unique / 20% repeated / 20% reworded), because cache numbers mean nothing without stating the workload. Full methodology, raw k6 output, and reproduction commands: **[RESULTS.md](RESULTS.md)**.
 
-Prereqs: Docker. Optionally free API keys from [Groq](https://console.groq.com)
-and [Google AI Studio](https://aistudio.google.com).
+| Metric | Measured |
+|---|---|
+| Provider spend avoided | **42.6%** (tokens avoided: 40.8%) |
+| Cache hit rate | **47.1%** (39.6% exact + 7.6% semantic) |
+| Warm cached response | **16 ms median** (vs 200 ms+ provider baseline) |
+| Requests benchmarked | **141,885** in 7 min / 150 VUs / 3 replicas |
+| Stress ceiling *(repetitive traffic)* | **1,500 req/s** / p99 513 ms / 1.34M requests |
+| Thundering herd | 20 concurrent identical requests to **1 provider call** |
+| Distributed rate limit | 10-rpm key: **exactly 10 accepted** across 3 nodes |
+| Prompt compression | **66%** token cut on verbose, redundant prompts |
+| Semantic threshold | 0.66, tuned on labeled data: 62% recall, **0% false hits** |
+| Failures under overload | **0% unexpected**: 100% of excess load rejected as clean 503s |
+
+## What's inside
+
+| Feature | The interesting bit |
+|---|---|
+| **Exact-match cache** | SHA-256 of the canonical request in Redis; a hit on any instance serves all instances |
+| **Semantic cache** | *"Explain what X is"* hits an answer cached for *"What is X?"*: embeddings + Qdrant cosine search, tunable threshold, TTL, skip-when-creative policy |
+| **Single-flight coalescing** | Concurrent identical misses **across instances** collapse into one provider call via Redis `SET NX` leader election, with crash takeover |
+| **Distributed rate limiting** | Per-key quotas that hold *in aggregate* cluster-wide, one atomic Lua script per request |
+| **Spend caps & attribution** | Token-priced cost per call, atomic org/team/key monthly counters, HTTP 402 when the budget is gone |
+| **Key management** | Provider keys never leave the server; apps get scoped, revocable gateway keys |
+| **Provider failover** | Groq to Gemini to mock, with per-provider circuit breakers (open after 3 failures, half-open probe after 30 s) |
+| **SSE streaming** | Real token-by-token passthrough that still captures the full response for caching and cost accounting |
+| **Backpressure** | Bounded in-flight work; overload gets an instant clean 503, never a collapse |
+| **Prompt compression** | Heuristic trimmer for long, redundant prompts: measurably fewer tokens, roughly same meaning |
+| **Observability** | Micrometer to Prometheus to a provisioned Grafana dashboard (p50/p95/p99, hit rates, cost per team, rejections) |
+| **Demo UI** | Single-page dashboard: send a prompt, watch cache status / latency / cost / serving instance, live cluster stats |
+
+The whole thing is **~29 classes, ~1,750 lines of Java**, deliberately small enough to read in an evening. Every mechanism above has a plain-English comment at its source.
+
+## How a request flows
+
+```
+ auth -> rate limit -> backpressure -> compress -> exact cache -> semantic cache -> budget -> single-flight -> provider failover
+         (Redis)       (semaphore)                 ~0.5 ms hit    ~5 ms hit         (402?)    (Redis lock)     (circuit breakers)
+```
+
+The ordering is itself a design decision: **cheapest checks first**. A rate-limit check costs one Redis op; an embedding plus vector search costs milliseconds; a provider call costs hundreds of milliseconds *and money*. Budgets are only checked when we are about to spend, since cache hits are free and should not be blocked by an exhausted budget. Full rationale for every decision (and its alternatives): **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
+## Quickstart (zero keys, zero config)
+
+The only prerequisite is Docker. A built-in mock provider means **no API keys, no signups**: the full cluster works out of the box.
 
 ```bash
-cp .env.example .env        # optionally add GROQ_API_KEY / GEMINI_API_KEY
-docker compose up --build
+git clone https://github.com/arancksj22/LLMOpsGateway.git && cd LLMOpsGateway
+docker compose up --build        # ~2 min first build
 ```
 
-| URL | What |
+| Service | URL |
 |---|---|
-| http://localhost:8080 | Demo UI + API via the load balancer |
-| http://localhost:3000 | Grafana (admin/admin), "LLM Gateway" dashboard provisioned |
-| http://localhost:9090 | Prometheus |
+| **Demo UI** | http://localhost:8080 |
+| **Grafana** | http://localhost:3000 (admin/admin, dashboard pre-provisioned) |
+| **Prometheus** | http://localhost:9090 |
 
-No keys? Everything still works — requests fall through to the built-in mock provider.
+**The 60-second demo:** open the UI, send a prompt (`miss`, ~200 ms), send it again (`exact` hit, ~10 ms, served by a *different instance*, `saved $`), reword it (`semantic` hit), and watch the live cluster stats climb.
 
-### Use the API
+Real providers are two free keys away ([Groq](https://console.groq.com), [Google AI Studio](https://aistudio.google.com)):
+
+```bash
+cp .env.example .env    # paste GROQ_API_KEY / GEMINI_API_KEY
+docker compose up -d
+```
+
+### Use it as an API (OpenAI-compatible)
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \
@@ -100,122 +138,61 @@ curl http://localhost:8080/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"What is a distributed cache?"}],"temperature":0}'
 ```
 
-OpenAI-style shape; the response carries a `gateway` block (`cache`:
-exact/semantic/miss, `latency_ms`, `cost_usd`, `saved_usd`, `provider`,
-`instance`, `coalesced`, compression info). Optional per-request controls:
-`"cache": false`, `"compress": false`, `"stream": true` (SSE passthrough).
+Responses carry a `gateway` block (cache status, latency, cost, savings, serving instance, coalescing) so the value is visible on every call. Per-request controls: `"cache": false`, `"compress": false`, `"stream": true`. Key management, budgets, and every endpoint: **[USAGE.md](USAGE.md)**.
 
-### Manage keys, budgets, stats
+## Prove the distributed claims yourself
 
-```bash
-# create a scoped key: 60 req/min, $5/month
-curl -X POST http://localhost:8080/admin/keys -H "X-Admin-Key: admin-secret" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"checkout-service","team":"payments","rpm":60,"monthly_budget_usd":5}'
-
-curl http://localhost:8080/admin/keys -H "X-Admin-Key: admin-secret"   # inspect
-curl -X DELETE http://localhost:8080/admin/keys/gw_... -H "X-Admin-Key: admin-secret"  # revoke
-curl http://localhost:8080/admin/stats                                  # live cluster stats
-```
-
-All thresholds, limits, budgets and per-model pricing are configuration
-(`backend/src/main/resources/application.yml`, overridable via env / `.env`).
-
-## Validate distributed behavior
-
-With the cluster up (Python 3, stdlib only):
+Distributed behavior is **verified, not asserted**: one script, three properties, against the live cluster.
 
 ```bash
 python scripts/distributed_check.py
 ```
 
-Checks shared cache across instances, single-flight coalescing (~20 concurrent
-identical requests → 1 provider call), and a 10-rpm key holding in aggregate
-across all replicas.
-
-## Load test (k6)
-
-```bash
-k6 run k6/load_test.js                          # ~5 min @ 100 VUs
-k6 run -e VUS=150 -e DURATION=15m k6/load_test.js   # longer run for 100K+ requests
+```
+[PASS] shared cache:   miss once, then 6/6 exact hits served by gw1, gw2 AND gw3
+[PASS] single-flight:  20 concurrent identical requests -> 1 provider call
+[PASS] rate limit:     10-rpm key -> exactly 10 accepted, 20x HTTP 429, across all nodes
 ```
 
-Traffic mix (realistic, mostly unique): 20% repeated (exact hits), 20%
-reworded (semantic hits), 60% genuinely unique (misses), plus bursts of
-concurrent identical prompts (coalescing). Make the mix more repetitive to
-measure the cache-friendly upper bound.
-Custom metrics in the k6 summary: `gateway_cache_exact/semantic/miss`,
-`gateway_coalesced`, `gateway_cached_latency`. Run against the mock provider
-(default with no keys) so it costs $0.
-
-To measure token-cost reduction, run once with caching/compression on, once
-with `EXACT_CACHE_ENABLED=false SEMANTIC_CACHE_ENABLED=false
-COMPRESSION_ENABLED=false`, and compare `cost_usd` in `/admin/stats`.
-
-## Tune the semantic threshold
+Load test (mock provider means $0 at any volume) and threshold tuning:
 
 ```bash
-python scripts/threshold_eval.py
+k6 run k6/load_test.js               # realistic traffic mix, custom cache metrics
+python scripts/threshold_eval.py     # sweep semantic threshold on labeled pairs
 ```
 
-Sweeps the similarity threshold over a labeled set of equivalent /
-non-equivalent query pairs (via `/admin/similarity`, i.e. the exact embedding
-the cache uses) and prints hit-rate vs false-hit-rate per threshold plus a
-suggested value — so the configured `SEMANTIC_THRESHOLD` is data-justified.
+## Design highlights
 
-## Deployment (public demo)
+- **State placement is the whole game.** Rate limits, budgets, and locks live in Redis (they must be consistent). Circuit breakers stay in-memory (provider health is an *observation*, not shared state: worst case is 9 extra failures cluster-wide, versus a Redis round-trip on every request). Knowing which is which is the design.
+- **Precision over recall in the semantic cache.** The threshold (0.66) was chosen by sweeping labeled paraphrase pairs: the highest hit rate at **zero false hits**, because confidently serving a *wrong* cached answer is the one unforgivable failure mode.
+- **Everything is config, nothing is hardcoded.** Thresholds, TTLs, budgets, per-model pricing, provider order: one typed record tree, all env-overridable.
+- **Deliberately boring where boring wins.** Nginx over a service mesh, compose over K8s, polling over pub/sub, ~60-line hand-rolled provider adapters over an LLM framework. Every "no" is defended in [ARCHITECTURE.md](ARCHITECTURE.md).
 
-Target: **Render free tier**, single instance (Dockerfile in `backend/`), with
-Upstash/Redis Cloud free Redis and Qdrant Cloud free tier. Notes: Render free
-services cold-start after ~15 min idle; on the 512MB tier use
-`EMBEDDING_PROVIDER=gemini` (hosted embeddings) to keep memory low. The
-multi-instance behavior is demonstrated locally, not on Render.
+**Honest scope:** this demonstrates distributed *capability* on a local cluster with free-tier/mock providers, validated by load tests rather than production traffic. Known limitations (fixed-window burst edges, TTL-only invalidation, single-node Redis) are documented with their upgrade paths.
 
-## Results (measured)
+## Documentation
 
-> Full methodology, raw k6 summaries and reproduction commands: **[RESULTS.md](RESULTS.md)**.
-> Measured on the local 3-replica cluster with the mock provider (real pricing applied).
-> Primary numbers use a **realistic mostly-unique traffic mix** (60% unique / 20%
-> repeated / 20% reworded); a near-fully-repetitive stress run is the upper bound.
-
-| Metric | Value |
+| Doc | What's in it |
 |---|---|
-| Requests benchmarked | 141,885 in 7 min (k6, local 3-replica cluster) |
-| Cache hit rate (exact / semantic) | 39.6% / 7.6% (47.1% combined) |
-| Provider spend avoided | ~43% (tokens avoided: ~41%) |
-| Warm cached-response latency | 16 ms median (p99 507 ms) |
-| Throughput / latency (realistic mix) | ~340 req/s · p50 468 ms · p99 1.71 s |
-| Upper bound (repetitive stress run) | 1.34M requests · ~1,500 req/s · p99 513 ms · 99% hit rate |
-| Coalescing (20-way concurrent-identical burst) | 1–2 provider calls, rest coalesced |
-| Distributed rate limit (10-rpm key, 30-req burst) | exactly 10 accepted across 3 instances |
-| Prompt compression (verbose redundant prompt) | 66% prompt-token reduction |
-| Chosen semantic threshold (hit vs false-hit) | 0.66 (62% / 0%) |
-
-### Impact summary
-
-- **Efficiency:** avoided ~43% of provider spend and ~41% of tokens on a
-  realistic mostly-unique workload (up to 98–99% on repetitive traffic) and
-  served warm cached responses in 16 ms median, by layering exact-match
-  deduplication, semantic caching (embeddings + vector DB) and prompt
-  compression — measured across 140K+ benchmarked requests.
-- **Distributed systems:** scaled horizontally behind a load balancer with
-  shared cache/vector state across stateless instances, single-flight request
-  coalescing collapsing 20 concurrent duplicate cache misses into 1–2 provider
-  calls, and atomic Redis-backed rate limiting enforcing per-key quotas
-  exactly across all nodes.
-- **Centralized control:** server-side provider-key storage with scoped
-  revocable per-app keys, org-wide spend-cap enforcement with per-team cost
-  attribution, and full usage/cost/latency observability via Prometheus + Grafana.
-- **Reliability:** multi-provider fallback with circuit breaking, SSE streaming
-  passthrough, and backpressure via bounded in-flight work, validated under k6
-  at up to ~1,500 req/s (cache-saturation stress) and 513 ms p99 with zero
-  unexpected failures.
+| **[ARCHITECTURE.md](ARCHITECTURE.md)** | Every design decision with alternatives and trade-offs, a distributed-correctness cheat sheet, 27 interview-style Q&As |
+| **[USAGE.md](USAGE.md)** | Complete operating manual: keys, endpoints, config reference, load testing, troubleshooting |
+| **[RESULTS.md](RESULTS.md)** | Benchmark methodology, raw k6 summaries, cost math, reproduction commands |
 
 ## Repo layout
 
 ```
-backend/    Spring Boot gateway (+ demo UI in src/main/resources/static)
-nginx/      load balancer config
-prometheus/ scrape config          grafana/  provisioned dashboard
-k6/         load test              scripts/  threshold eval + distributed checks
+backend/     Spring Boot gateway (~29 classes) + demo UI (single static page)
+nginx/       load balancer          prometheus/  scrape config
+grafana/     provisioned dashboard  k6/          load-test script (traffic-mix driven)
+scripts/     distributed checks . semantic-threshold evaluation . labeled dataset
 ```
+
+---
+
+<div align="center">
+
+**Stack:** Java 21 / Spring Boot 4 (MVC + virtual threads) / Redis / Qdrant / Nginx / Docker Compose / Prometheus + Grafana / k6 / GitHub Actions
+
+*Built as a deep-dive into distributed systems and LLM cost engineering. Every number in this README is measured, reproducible, and honestly framed.*
+
+</div>
