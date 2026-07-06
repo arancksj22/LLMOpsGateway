@@ -134,8 +134,8 @@ that lead with the same metric. Suggested header:
     API keys.
 
 25. Shipped a reproducible one-command environment — Nginx LB, 3 gateway
-    replicas, Redis, Qdrant, Prometheus, Grafana — via docker-compose, plus
-    CI (GitHub Actions) building and testing on every push.
+    replicas, Redis, Qdrant, Prometheus, Grafana — via docker-compose, so the
+    full distributed cluster starts with a single command on any machine.
 
 ## AI/ML engineering (for AI-engineer roles)
 

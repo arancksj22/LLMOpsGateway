@@ -12,7 +12,6 @@
 [![Qdrant](https://img.shields.io/badge/Qdrant-vector%20search-BC1439)](https://qdrant.tech/)
 [![Docker Compose](https://img.shields.io/badge/Docker-3--replica%20cluster-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 [![k6](https://img.shields.io/badge/k6-1.3M%2B%20requests-7D64FF?logo=k6&logoColor=white)](https://k6.io/)
-[![CI](https://img.shields.io/badge/CI-GitHub%20Actions-2088FF?logo=githubactions&logoColor=white)](.github/workflows/ci.yml)
 
 **[Quickstart](#quickstart-zero-keys-zero-config)** |
 **[Measured Results](#measured-results)** |
@@ -191,7 +190,7 @@ scripts/     distributed checks . semantic-threshold evaluation . labeled datase
 
 <div align="center">
 
-**Stack:** Java 21 / Spring Boot 4 (MVC + virtual threads) / Redis / Qdrant / Nginx / Docker Compose / Prometheus + Grafana / k6 / GitHub Actions
+**Stack:** Java 21 / Spring Boot 4 (MVC + virtual threads) / Redis / Qdrant / Nginx / Docker Compose / Prometheus + Grafana / k6
 
 *Built as a deep-dive into distributed systems and LLM cost engineering. Every number in this README is measured, reproducible, and honestly framed.*
 

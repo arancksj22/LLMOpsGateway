@@ -330,7 +330,6 @@ cd backend
 ./mvnw package          # compiles + runs the unit tests (Windows: .\mvnw.cmd)
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same on every push/PR.
 
 ---
 
